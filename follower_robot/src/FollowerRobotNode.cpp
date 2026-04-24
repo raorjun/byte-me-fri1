@@ -114,7 +114,23 @@ Eigen::MatrixXd FollowerRobotNode::computeGoToFrameFromBaseLink(
 
         That's a lot of help! Go write this thing!!
     */
+    double x = base_link_to_tag1.transform.translation.x;
+    double y = base_link_to_tag1.transform.translation.y;
+
+    double angle = atan2(y, x);
+    double dist = std::sqrt(x * x + y * y);
+
+    Eigen::Matrix3d rotation =
+        Eigen::AngleAxisd(angle, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+
+    double scale = (dist - follow_distance_) / dist;
+    double goal_x = x * scale;
+    double goal_y = y * scale;
+
     Eigen::MatrixXd transform = Eigen::MatrixXd::Identity(4, 4);
+    transform.block<3, 3>(0, 0) = rotation;
+    transform(0, 3) = goal_x;
+    transform(1, 3) = goal_y;
 
     return transform;
 }
@@ -128,10 +144,13 @@ double FollowerRobotNode::computeDistanceBaseLinkTag1(
 
         Distance is just l2 norm or Euclidean distance. You've got this.
     */
-    double distance = 0.0;
+    double x = base_link_to_tag1.transform.translation.x;
+    double y = base_link_to_tag1.transform.translation.y;
+    double z = base_link_to_tag1.transform.translation.z;
+    double distance = std::sqrt(x * x + y * y + z * z);
     RCLCPP_INFO_STREAM(this->get_logger(),
         "distance:  " << distance << endl);
-    return distance;  
+    return distance;
 }
 
 //I implemented this. You do not need to change it.
@@ -191,9 +210,11 @@ bool FollowerRobotNode::theTagMoved(
 */
 void FollowerRobotNode::computeAndAct() {
     try{
-        //Look up the transform between map and base_link here
-        geometry_msgs::msg::TransformStamped map_to_base_link;
-        geometry_msgs::msg::TransformStamped base_link_to_tag1;
+        geometry_msgs::msg::TransformStamped map_to_base_link =
+            tf_buffer_.lookupTransform("map", "base_link", tf2::TimePointZero);
+        geometry_msgs::msg::TransformStamped base_link_to_tag1 =
+            tf_buffer_.lookupTransform("base_link", "tag_1", tf2::TimePointZero);
+
         if(theTagMoved(map_to_base_link, base_link_to_tag1)) {
             RCLCPP_INFO_STREAM(this->get_logger(), "THE TAG MOVED" << endl);
             double distance = computeDistanceBaseLinkTag1(base_link_to_tag1);
@@ -202,22 +223,15 @@ void FollowerRobotNode::computeAndAct() {
                     transformToMatrix(map_to_base_link);
                 Eigen::MatrixXd m_go_to =
                     computeGoToFrameFromBaseLink(base_link_to_tag1);
-                /*
-                    Compute m_map_to_go_to_ here. This updates the go to for
-                        the entire class, assuring that you always broadcast
-                        the correct pose.
-                */
-                //m_map_to_go_to_ =
-        
+                m_map_to_go_to_ = m_map_to_base_link * m_go_to;
                 move_to_target_.copyToGoalPoseAndSend(m_go_to);
             }
         }
-        /*
-            Fill in the TransformStamped using matrixToTransform.
-            Set tf1.header.stamp.
-            Send using tf_broadcaster_.
-        */
-        geometry_msgs::msg::TransformStamped tf1;
+
+        geometry_msgs::msg::TransformStamped tf1 =
+            matrixToTransform(m_map_to_go_to_, "map", "go_to_frame");
+        tf1.header.stamp = this->get_clock()->now();
+        tf_broadcaster_.sendTransform(tf1);
 
     } catch (const tf2::TransformException &ex) {
         RCLCPP_WARN(this->get_logger(), "Could not transform world -> example_frame: %s", ex.what());
